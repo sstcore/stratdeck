@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#07090f">
+<meta name="referrer" content="no-referrer">
+<title>StratDeck — Strategy Console</title>
+<meta http-equiv="Content-Security-Policy"
+  content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://ss-strat-dash-8f21.s3.eu-west-1.amazonaws.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Ambient background -->
+  <div class="ambient" aria-hidden="true">
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+    <div class="orb orb-c"></div>
+    <div class="gridlines"></div>
+  </div>
+
+  <!-- ============ LOGIN ============ -->
+  <main id="login" class="login">
+    <div class="login-card">
+      <div class="brand" aria-label="StratDeck">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
+          <defs>
+            <linearGradient id="markGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#34e0a1"/>
+              <stop offset="1" stop-color="#38bdf8"/>
+            </linearGradient>
+          </defs>
+          <path d="M20 2 L37 11 V29 L20 38 L3 29 V11 Z" fill="none" stroke="url(#markGrad)" stroke-width="2.2" stroke-linejoin="round"/>
+          <path d="M12 24 L17 18 L21 21 L28 13" fill="none" stroke="url(#markGrad)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="brand-name">StratDeck</span>
+      </div>
+
+      <h1>Unlock your console</h1>
+      <p class="login-sub">Enter your private key to decrypt and view the strategy dashboard. Decryption happens entirely in this tab.</p>
+
+      <label class="field-label" for="keyInput">Private key</label>
+      <div class="key-wrap">
+        <svg class="key-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M15 8a5 5 0 1 0 1 2h-2v3h-3v3H8v3H5v-3H2v-6l9-9a5 5 0 0 0-3 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="16" cy="8" r="1.4" fill="currentColor"/>
+        </svg>
+        <textarea id="keyInput" rows="4" spellcheck="false" autocapitalize="off" autocomplete="off"
+          placeholder="Paste key as PEM or single-line base64&#10;e.g.  -----BEGIN PRIVATE KEY-----  …"></textarea>
+      </div>
+
+      <label class="remember">
+        <input type="checkbox" id="remember">
+        <span>Remember for this tab (session only — never leaves your browser)</span>
+      </label>
+
+      <button id="unlockBtn" class="btn btn-primary" type="button">
+        <span class="btn-label">Unlock dashboard</span>
+      </button>
+
+      <p id="loginStatus" class="login-status" role="status" aria-live="polite"></p>
+
+      <div class="login-foot">
+        <span class="dot" aria-hidden="true"></span>
+        Your key never leaves this device. Data is fetched as public ciphertext and decrypted locally.
+      </div>
+    </div>
+  </main>
+
+  <!-- ============ APP ============ -->
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="brand brand-small" aria-label="StratDeck">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
+          <path d="M20 2 L37 11 V29 L20 38 L3 29 V11 Z" fill="none" stroke="url(#markGrad)" stroke-width="2.2" stroke-linejoin="round"/>
+          <path d="M12 24 L17 18 L21 21 L28 13" fill="none" stroke="url(#markGrad)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="brand-name">StratDeck</span>
+      </div>
+
+      <nav id="nav" class="nav" aria-label="Strategies"></nav>
+
+      <div class="topbar-actions">
+        <button id="refreshBtn" class="btn btn-ghost" type="button" title="Re-fetch and re-decrypt">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M20 4v7h-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Refresh</span>
+        </button>
+        <button id="lockBtn" class="btn btn-ghost" type="button" title="Lock and clear the key">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 11V7a4 4 0 0 1 8 0v4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <span>Lock</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="statusbar">
+      <span id="portfolioSummary" class="portfolio-summary"></span>
+      <span class="statusbar-right">
+        <span id="staleBadge" class="badge" aria-live="polite"></span>
+        <span id="asOfBadge" class="badge badge-dim" title="Latest snapshot time (UTC)"></span>
+      </span>
+    </div>
+
+    <main id="content" class="content"></main>
+
+    <footer class="footer">
+      <span>Data is encrypted at rest and decrypted in-browser &middot; cached ciphertext refreshes every ~30s</span>
+      <span id="generatedAt" class="footer-meta"></span>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
