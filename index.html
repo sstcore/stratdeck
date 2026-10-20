@@ -38,32 +38,34 @@
       </div>
 
       <h1>Unlock your console</h1>
-      <p class="login-sub">Enter your private key to decrypt and view the strategy dashboard. Decryption happens entirely in this tab.</p>
+      <p class="login-sub">Enter your password to view the strategy dashboard.</p>
 
-      <label class="field-label" for="keyInput">Private key</label>
-      <div class="key-wrap">
-        <svg class="key-icon" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M15 8a5 5 0 1 0 1 2h-2v3h-3v3H8v3H5v-3H2v-6l9-9a5 5 0 0 0-3 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-          <circle cx="16" cy="8" r="1.4" fill="currentColor"/>
-        </svg>
-        <textarea id="keyInput" rows="4" spellcheck="false" autocapitalize="off" autocomplete="off"
-          placeholder="Paste key as PEM or single-line base64&#10;e.g.  -----BEGIN PRIVATE KEY-----  …"></textarea>
-      </div>
+      <form id="loginForm" class="login-form" method="post" autocomplete="on">
+        <!-- Username field is only here so Google/Chrome Password Manager can match
+             and autofill this login. It is never used for authentication. -->
+        <input type="text" id="username" name="username" autocomplete="username"
+          class="visually-hidden" value="strategist" tabindex="-1" aria-hidden="true">
 
-      <label class="remember">
-        <input type="checkbox" id="remember">
-        <span>Remember for this tab (session only — never leaves your browser)</span>
-      </label>
+        <label class="field-label" for="passwordInput">Password</label>
+        <div class="key-wrap">
+          <svg class="key-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="5" y="11" width="14" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M8 11V7a4 4 0 0 1 8 0v4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+          <input type="password" id="passwordInput" name="password" autocomplete="current-password"
+            placeholder="Enter password" spellcheck="false" autocapitalize="off" required>
+        </div>
 
-      <button id="unlockBtn" class="btn btn-primary" type="button">
-        <span class="btn-label">Unlock dashboard</span>
-      </button>
+        <button id="unlockBtn" class="btn btn-primary" type="submit">
+          <span class="btn-label">Unlock dashboard</span>
+        </button>
+      </form>
 
       <p id="loginStatus" class="login-status" role="status" aria-live="polite"></p>
 
       <div class="login-foot">
         <span class="dot" aria-hidden="true"></span>
-        Your key never leaves this device. Data is fetched as public ciphertext and decrypted locally.
+        Data is fetched as public ciphertext and decrypted locally in this tab.
       </div>
     </div>
   </main>
@@ -86,7 +88,7 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M20 4v7h-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span>Refresh</span>
         </button>
-        <button id="lockBtn" class="btn btn-ghost" type="button" title="Lock and clear the key">
+        <button id="lockBtn" class="btn btn-ghost" type="button" title="Lock and return to the login screen">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 11V7a4 4 0 0 1 8 0v4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           <span>Lock</span>
         </button>
@@ -104,7 +106,7 @@
     <main id="content" class="content"></main>
 
     <footer class="footer">
-      <span>Data is encrypted at rest and decrypted in-browser &middot; cached ciphertext refreshes every ~30s</span>
+      <span>Data is encrypted at rest and decrypted in-browser &middot; auto-refreshes when a new snapshot is published (~5 min)</span>
       <span id="generatedAt" class="footer-meta"></span>
     </footer>
   </div>

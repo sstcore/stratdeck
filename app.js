@@ -9,8 +9,19 @@
  * ------------------------------------------------------------------ */
 const DATA_URL = 'https://ss-strat-dash-8f21.s3.eu-west-1.amazonaws.com/data/dashboard_data.enc';
 const HKDF_INFO = 'strat-dashboard-v1';
-const STALE_MS = 15 * 60 * 1000;          // warn when publish is older than this
-const SESSION_KEY = 'stratdeck.key';       // sessionStorage only (this tab)
+// Login password + the recipient private key are embedded in this static site so
+// operators only need to remember a single password. NOTE: because the key ships
+// with the page, anyone who can load the site can also decrypt the ciphertext.
+const LOGIN_PASSWORD = 'silverstream2026!';
+const PRIVATE_KEY = 'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgBB1QM5ezUnTsH+zOv0NCZj2ayyifvY/+Co2AKoAEqAKhRANCAATtstn7N3w6wfgJBvEEUx9rOKmWWxA7+oRc+WTZCV6LHjgBNM+ijEemoNio7RWH76xelzJ7MRMFdlrnM+4nFmSs';
+
+// Freshness / auto-refresh. The prod server publishes a new encrypted snapshot to
+// S3 every 5 minutes; once the current snapshot passes that age we poll S3 and swap
+// in the new data automatically (no page reload or logout needed).
+const PUBLISH_INTERVAL_MS = 5 * 60 * 1000;
+const AUTO_REFRESH_AFTER_MS = PUBLISH_INTERVAL_MS + 5 * 1000;   // trigger at ~5:05
+const TICK_MS = 30 * 1000;                                      // badge/refresh cadence
+const STALE_MS = 15 * 60 * 1000;                                // badge turns red past this
 
 // Optional local/serve override:      index.html?data=/test.enc
 // Honoured ONLY on localhost (never on the deployed Pages origin), so a link to the
@@ -18,17 +29,9 @@ const SESSION_KEY = 'stratdeck.key';       // sessionStorage only (this tab)
 const _isLocalhost = /^localhost$/i.test(location.hostname) || /^127\.\d+\.\d+\.\d+$/.test(location.hostname) || location.hostname === '[::1]';
 const DATA_OVERRIDE = _isLocalhost ? new URLSearchParams(location.search).get('data') : null;
 
-// Locally hardcoded inception AUM. The S3/monitor payload carries drifted initial
-// values, so we correct them client-side and NEVER republish the ciphertext.
-// Keyed by the stable strategy key.
-const INITIAL_AUM = {
-  mm:          48000.00,   // MM1
-  mm2:         47586.00,   // MM2
-  jic:         47000.00,   // JIC
-  ctabin_test:  5260.00,   // ctabinTEST
-  ctabin1:    100000.00,   // CTABIN1
-};
-// Canonical nav order: MM1, MM2, JIC, ctabinTEST, CTABIN1.
+// Canonical nav order: MM1, MM2, JIC, ctabinTEST, CTABIN1. The strategy list,
+// names and every AUM figure (including initial_aum) come straight from the S3
+// payload — nothing is hardcoded or corrected client-side.
 const STRATEGY_ORDER = ['mm', 'mm2', 'jic', 'ctabin_test', 'ctabin1'];
 
 /* ------------------------------------------------------------------ *
@@ -128,38 +131,44 @@ async function decryptEnvelope(env, keyText) {
  * ------------------------------------------------------------------ */
 const state = {
   data: null,
-  key: null,
   fetchedAt: null,
+  refreshing: false,
+  loggingIn: false,
+  lastAttemptAt: 0,
+  epoch: 0,
 };
 
 /* ------------------------------------------------------------------ *
- * Local corrections (applied to decrypted data, in-memory only)
+ * Payload normalisation (in-memory only — never republished)
+ * Every figure comes from the S3 payload; we only put strategies into the
+ * canonical nav order and recompute portfolio totals from those same rows.
  * ------------------------------------------------------------------ */
-function applyLocalCorrections(data) {
+function normalizePayload(data) {
+  data.strategies = Array.isArray(data.strategies) ? data.strategies : [];
   const order = Object.fromEntries(STRATEGY_ORDER.map((k, i) => [k, i]));
-  for (const s of (data.strategies || [])) {
-    if (Object.prototype.hasOwnProperty.call(INITIAL_AUM, s.key)) {
-      s.initial_aum = INITIAL_AUM[s.key];
-    }
-    // PnL since inception is simply aum - initial_aum. drawdown_utilised in the
-    // payload is identically (aum - initial_aum) in every row, so keep it aligned
-    // with the corrected initial too (remove if your real DD is HWM-independent).
-    if (s.aum != null && s.initial_aum != null) {
+  for (const s of data.strategies) {
+    // Only derive pnl_initial when the payload omits it. initial_aum itself is
+    // always the server value — never hardcoded or corrected here.
+    if (s.pnl_initial == null && s.aum != null && s.initial_aum != null) {
       s.pnl_initial = +(s.aum - s.initial_aum).toFixed(2);
-      s.drawdown_utilised = s.pnl_initial;
     }
+    if (!Array.isArray(s.positions)) s.positions = [];
+    if (!Array.isArray(s.aum_history)) s.aum_history = [];
   }
   // Stable canonical order (falls back to alphabetical for unknown keys).
   data.strategies.sort((a, b) =>
     ((order[a.key] ?? 1e6) - (order[b.key] ?? 1e6)) || (a.key < b.key ? -1 : 1));
 
-  // Recompute portfolio totals from the corrected strategies.
+  // Recompute portfolio totals from the published strategy rows.
   const initial = data.strategies.reduce((t, s) => t + (s.initial_aum || 0), 0);
   const aum = data.strategies.reduce((t, s) => t + (s.aum || 0), 0);
+  const positions = data.strategies.reduce((t, s) =>
+    t + ((s.positions && s.positions.length) || s.positions_count || 0), 0);
   data.totals = Object.assign({}, data.totals, {
     aum: +aum.toFixed(2),
     initial_aum: +initial.toFixed(2),
     pnl_initial: +(aum - initial).toFixed(2),
+    positions: positions,
   });
   return data;
 }
@@ -570,7 +579,7 @@ function animateNumber(el, target, formatter, dur = 750) {
 }
 
 /* ------------------------------------------------------------------ *
- * Login / unlock / lock
+ * Login / lock / data refresh
  * ------------------------------------------------------------------ */
 function showLogin() { $('#login').hidden = false; $('#app').hidden = true; }
 function showApp() { $('#login').hidden = true; $('#app').hidden = false; }
@@ -588,78 +597,99 @@ async function fetchEnvelope(url) {
   return b64ToBytes(text);
 }
 
-async function unlock() {
-  const keyInput = $('#keyInput');
+async function fetchAndDecrypt() {
+  const env = await fetchEnvelope(DATA_OVERRIDE || DATA_URL);
+  return normalizePayload(await decryptEnvelope(env, PRIVATE_KEY));
+}
+
+// Hand the credentials to the browser password manager (Chrome/Edge support the
+// Credential Management API) so it offers to save and autofill them next time.
+// Elsewhere this is a no-op and the form's autocomplete attributes take over.
+async function saveCredential(password) {
+  try {
+    if (!window.PasswordCredential || !navigator.credentials || !navigator.credentials.store) return;
+    const user = ($('#username') && $('#username').value) || 'strategist';
+    await navigator.credentials.store(new PasswordCredential({ id: user, password: password, name: 'StratDeck' }));
+  } catch (e) { /* user dismissed the prompt, or API unavailable */ }
+}
+
+async function login() {
+  if (state.loggingIn) return;
+  const pwInput = $('#passwordInput');
   const btn = $('#unlockBtn');
+  const password = pwInput ? pwInput.value : '';
 
   if (!crypto.subtle) {
     setLoginStatus('WebCrypto unavailable — open over https:// or http://localhost (not file://).', 'err');
     return;
   }
-  const keyText = keyInput.value;
-  if (!keyText.trim()) { setLoginStatus('Enter your private key to continue.', 'err'); return; }
+  if (!password) { setLoginStatus('Enter your password to continue.', 'err'); return; }
+  if (password !== LOGIN_PASSWORD) { setLoginStatus('Incorrect password. Try again.', 'err'); return; }
 
+  state.loggingIn = true;
   btn.disabled = true; btn.classList.add('working');
   setLoginStatus('Fetching encrypted data…', 'busy');
   try {
-    const url = DATA_OVERRIDE || DATA_URL;
-    const env = await fetchEnvelope(url);
-    setLoginStatus('Decrypting…', 'busy');
-    const data = applyLocalCorrections(await decryptEnvelope(env, keyText));
-
+    const data = await fetchAndDecrypt();
     state.data = data;
-    state.key = keyText;
     state.fetchedAt = Date.now();
-    if ($('#remember').checked) {
-      try { sessionStorage.setItem(SESSION_KEY, keyText); } catch (e) { /* storage full/blocked */ }
-    } else {
-      sessionStorage.removeItem(SESSION_KEY);
-    }
+    state.lastAttemptAt = state.fetchedAt;
 
     setLoginStatus('', '');
-    keyInput.value = '';
+    if (pwInput) pwInput.value = '';
+    saveCredential(password);   // fire-and-forget: let the password manager save it
     showApp();
     if (!location.hash) location.hash = '#/all';
     renderRoute();
-
-    // refresh the stale badge/clock every 30s while open
     startTicker();
   } catch (e) {
     const msg = String(e && e.message || e);
     const friendly = msg.includes('decrypt') || msg.includes('OperationError')
-      ? 'Wrong key — decryption failed.'
+      ? 'Could not decrypt the latest snapshot.'
       : msg;
     setLoginStatus('Failed to log in. ' + friendly, 'err');
   } finally {
+    state.loggingIn = false;
     btn.disabled = false; btn.classList.remove('working');
   }
 }
 
 function lock() {
-  state.key = null;
+  state.epoch++;
   state.data = null;
-  try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
+  state.refreshing = false;
   stopTicker();
   showLogin();
-  $('#keyInput').value = '';
-  $('#keyInput').focus();
-  setLoginStatus('Locked. Enter your key to unlock again.', '');
+  const pw = $('#passwordInput');
+  if (pw) { pw.value = ''; pw.focus(); }
+  setLoginStatus('Locked. Enter your password to unlock again.', '');
 }
 
-async function refresh() {
-  if (!state.key) return;
+// Re-fetch + re-decrypt the S3 snapshot. Returns true when the snapshot changed.
+async function refresh(opts) {
+  if (state.refreshing) return false;
+  const manual = !!(opts && opts.manual);
+  const epoch = state.epoch;
   const btn = $('#refreshBtn');
-  btn.disabled = true;
+  state.refreshing = true;
+  state.lastAttemptAt = Date.now();
+  if (manual) btn.disabled = true;
   try {
-    const env = await fetchEnvelope(DATA_OVERRIDE || DATA_URL);
-    const data = applyLocalCorrections(await decryptEnvelope(env, state.key));
+    const data = await fetchAndDecrypt();
+    // The user locked (or a new session started) while we were fetching — drop it.
+    if (epoch !== state.epoch) return false;
+    const prev = state.data;
     state.data = data;
     state.fetchedAt = Date.now();
-    renderRoute();
+    const changed = !prev || prev.generated_at !== data.generated_at || prev.as_of !== data.as_of;
+    if (changed) renderRoute(); else renderMeta();
+    return changed;
   } catch (e) {
     console.error('refresh failed', e);
+    return false;
   } finally {
-    btn.disabled = false;
+    state.refreshing = false;
+    if (manual) btn.disabled = false;
   }
 }
 
@@ -675,9 +705,32 @@ function renderRoute() {
 }
 
 let _ticker = null;
+
+// Age of the currently displayed snapshot, based on the publisher timestamp
+// (falling back to the monitor timestamp, then to when we fetched it).
+function snapshotAgeMs() {
+  const gen = Date.parse(state.data && state.data.generated_at);
+  if (Number.isFinite(gen)) return Date.now() - gen;
+  const asOfRaw = state.data && state.data.as_of;
+  const asOf = Date.parse(String(asOfRaw || '').replace(' ', 'T') + 'Z');
+  if (Number.isFinite(asOf)) return Date.now() - asOf;
+  return state.fetchedAt ? Date.now() - state.fetchedAt : Infinity;
+}
+
+async function tick() {
+  if (!state.data) return;
+  renderMeta();
+  // Once the displayed snapshot passes the 5-minute publish cadence, fetch the
+  // next one from S3 automatically — no page refresh or logout required.
+  if (state.refreshing) return;
+  if (snapshotAgeMs() < AUTO_REFRESH_AFTER_MS) return;
+  if (Date.now() - state.lastAttemptAt < TICK_MS - 1000) return;
+  await refresh();
+}
+
 function startTicker() {
   stopTicker();
-  _ticker = setInterval(() => { if (state.data) renderMeta(); }, 30000);
+  _ticker = setInterval(tick, TICK_MS);
 }
 function stopTicker() { if (_ticker) { clearInterval(_ticker); _ticker = null; } }
 
@@ -687,22 +740,18 @@ function stopTicker() { if (_ticker) { clearInterval(_ticker); _ticker = null; }
 window.addEventListener('hashchange', renderRoute);
 
 document.addEventListener('DOMContentLoaded', () => {
-  $('#unlockBtn').addEventListener('click', unlock);
-  $('#lockBtn').addEventListener('click', lock);
-  $('#refreshBtn').addEventListener('click', refresh);
-  $('#keyInput').addEventListener('keydown', e => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') unlock();
-  });
-
-  // restore remembered key (sessionStorage) and auto-unlock
-  let saved = null;
-  try { saved = sessionStorage.getItem(SESSION_KEY); } catch (e) {}
-  if (saved) {
-    $('#keyInput').value = saved;
-    $('#remember').checked = true;
-    unlock();
+  const form = $('#loginForm');
+  if (form) {
+    // Submit is the standard signal password managers watch for; we intercept it
+    // so no navigation happens (CSP also blocks form-action) and log in in-place.
+    form.addEventListener('submit', e => { e.preventDefault(); login(); });
   } else {
-    showLogin();
-    $('#keyInput').focus();
+    $('#unlockBtn').addEventListener('click', login);
   }
+  $('#lockBtn').addEventListener('click', lock);
+  $('#refreshBtn').addEventListener('click', () => refresh({ manual: true }));
+
+  showLogin();
+  const pw = $('#passwordInput');
+  if (pw) pw.focus();
 });
